@@ -17,11 +17,6 @@ import (
 	"time"
 )
 
-const (
-	reconnectDelay = 5 * time.Second
-	resendDelay    = 1 * time.Second
-)
-
 var (
 	ErrDisconnected = errors.New("disconnected from rabbitmq, trying to reconnect")
 )
@@ -30,14 +25,16 @@ type HandlerFunc func(msg *amqp.Delivery) error
 
 // client holds necessary information for rabbitMQ
 type client struct {
-	connection    *amqp.Connection
-	channel       *amqp.Channel
-	done          chan os.Signal
-	notifyClose   chan *amqp.Error
-	notifyConfirm chan amqp.Confirmation
-	isConnected   bool
-	threads       int
-	wg            *sync.WaitGroup
+	connection     *amqp.Connection
+	channel        *amqp.Channel
+	done           chan os.Signal
+	notifyClose    chan *amqp.Error
+	notifyConfirm  chan amqp.Confirmation
+	isConnected    bool
+	threads        int
+	reconnectDelay time.Duration
+	resendDelay    time.Duration
+	wg             *sync.WaitGroup
 }
 
 type Client interface {
@@ -52,7 +49,7 @@ type Client interface {
 	IsConnected() bool
 }
 
-func New(user, password, host string, port int) Client {
+func New(user, password, host string, port int, reconnectDelay, resendDelay time.Duration) Client {
 	threads := runtime.GOMAXPROCS(0)
 	if numCPU := runtime.NumCPU(); numCPU > threads {
 		threads = numCPU
@@ -61,10 +58,20 @@ func New(user, password, host string, port int) Client {
 	doneChan := make(chan os.Signal, 1)
 	signal.Notify(doneChan, syscall.SIGINT, syscall.SIGTERM)
 
+	if reconnectDelay == 0 {
+		reconnectDelay = 5 * time.Second
+	}
+
+	if resendDelay == 0 {
+		resendDelay = time.Second
+	}
+
 	client := client{
-		threads: threads,
-		done:    doneChan,
-		wg:      &sync.WaitGroup{},
+		threads:        threads,
+		done:           doneChan,
+		reconnectDelay: reconnectDelay,
+		resendDelay:    resendDelay,
+		wg:             &sync.WaitGroup{},
 	}
 	client.wg.Add(threads)
 
@@ -106,7 +113,7 @@ func (c *client) handleReconnect(addr string) {
 			case <-c.done:
 				c.isConnected = false
 				return
-			case <-time.After(reconnectDelay + time.Duration(retryCount)*time.Second):
+			case <-time.After(c.reconnectDelay + time.Duration(retryCount)*time.Second):
 				log.Println("disconnected from rabbitMQ and failed to connect")
 				retryCount++
 			}
@@ -180,7 +187,7 @@ func (c *client) Publish(data []byte, exchange, queue string) error {
 			if confirm.Ack {
 				return nil
 			}
-		case <-time.After(resendDelay):
+		case <-time.After(c.resendDelay):
 		}
 	}
 }

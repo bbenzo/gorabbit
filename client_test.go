@@ -148,7 +148,7 @@ func TestPublishToFanoutExchangeAndConsume(t *testing.T) {
 }
 
 func createClient() Client {
-	client := New("guest", "guest", "localhost", 5672)
+	client := New("guest", "guest", "localhost", 5672, 0, 0)
 	return client
 }
 
