@@ -1,4 +1,4 @@
-# go-rabbitmq-client
+# gorabbit
 
 This is a robust [RabbitMQ](https://www.rabbitmq.com/) client written in Go. It is based
 on the [streadway/amqp](https://github.com/streadway/amqp) Go library which implements
