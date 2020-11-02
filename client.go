@@ -23,18 +23,17 @@ var (
 
 type HandlerFunc func(msg *amqp.Delivery) error
 
-// client holds necessary information for rabbitMQ
 type client struct {
-	connection     *amqp.Connection
-	channel        *amqp.Channel
-	done           chan os.Signal
-	notifyClose    chan *amqp.Error
-	notifyConfirm  chan amqp.Confirmation
-	isConnected    bool
-	threads        int
-	reconnectDelay time.Duration
-	resendDelay    time.Duration
-	wg             *sync.WaitGroup
+	connection            *amqp.Connection
+	channel               *amqp.Channel
+	done                  chan os.Signal
+	notifyConnectionError chan *amqp.Error
+	notifyConfirm         chan amqp.Confirmation
+	isConnected           bool
+	threads               int
+	reconnectDelay        time.Duration
+	resendDelay           time.Duration
+	wg                    *sync.WaitGroup
 }
 
 type Client interface {
@@ -99,7 +98,7 @@ func address(user, password, host string, port int) string {
 }
 
 // handleReconnect will wait for a connection error on
-// notifyClose, and then continuously attempt to reconnect.
+// notifyConnectionError, and then continuously attempt to reconnect.
 func (c *client) handleReconnect(addr string) {
 	for {
 		c.isConnected = false
@@ -124,7 +123,7 @@ func (c *client) handleReconnect(addr string) {
 		case <-c.done:
 			c.isConnected = false
 			return
-		case <-c.notifyClose:
+		case <-c.notifyConnectionError:
 		}
 	}
 }
@@ -155,33 +154,33 @@ func (c *client) connect(addr string) bool {
 	return true
 }
 
-// changeConnection takes a new connection to the queue,
-// and updates the channel listeners to reflect this.
+// changeConnection takes a new connection and updates the channel listeners to reflect this.
 func (c *client) changeConnection(connection *amqp.Connection, channel *amqp.Channel) {
 	c.connection = connection
 	c.channel = channel
-	c.notifyClose = make(chan *amqp.Error)
+	c.notifyConnectionError = make(chan *amqp.Error)
 	c.notifyConfirm = make(chan amqp.Confirmation)
-	c.channel.NotifyClose(c.notifyClose)
+	c.channel.NotifyClose(c.notifyConnectionError)
 	c.channel.NotifyPublish(c.notifyConfirm)
 }
 
-// Push will push data onto the queue and wait for a confirmation.
+// Publish will publish the data to an exchange with a routingKey.
 // If no confirms are received until within the resendTimeout,
 // it continuously resends messages until a confirmation is received.
 // This will block until the server sends a confirm.
-func (c *client) Publish(data []byte, exchange, queue string) error {
+func (c *client) Publish(data []byte, exchange, routingKey string) error {
 	if !c.isConnected {
 		return errors.New("failed to publish: not connected")
 	}
 	for {
-		err := c.UnsafePublish(data, exchange, queue)
+		err := c.UnsafePublish(data, exchange, routingKey)
 		if err != nil {
 			if err == ErrDisconnected {
 				continue
 			}
 			return err
 		}
+
 		select {
 		case confirm := <-c.notifyConfirm:
 			if confirm.Ack {
@@ -192,20 +191,20 @@ func (c *client) Publish(data []byte, exchange, queue string) error {
 	}
 }
 
-// UnsafePush will push to the queue without checking for
-// confirmation. It returns an error if it fails to connect.
-// No guarantees are provided for whether the server will
+// UnsafePublish will publish the data to an exchange with a routingKey
+// without checking for confirmation. It returns an error if it fails to
+// connect. No guarantees are provided for whether the server will
 // receive the message.
-func (c *client) UnsafePublish(data []byte, exchange, queue string) error {
+func (c *client) UnsafePublish(data []byte, exchange, routingKey string) error {
 	if !c.isConnected {
 		return ErrDisconnected
 	}
 
 	return c.channel.Publish(
-		exchange, // Exchange
-		queue,    // Routing key
-		false,    // Mandatory
-		false,    // Immediate
+		exchange,   // Exchange
+		routingKey, // Routing key
+		false,      // Mandatory
+		false,      // Immediate
 		amqp.Publishing{
 			ContentType: "text/plain",
 			Body:        data,
@@ -213,7 +212,7 @@ func (c *client) UnsafePublish(data []byte, exchange, queue string) error {
 	)
 }
 
-// Consume will consume a specified queue and apply a handlerFunc to the received message
+// Consume will consume a queue and apply a HandlerFunc to the received message
 func (c *client) Consume(cancelCtx context.Context, handlerFunc HandlerFunc, queue string) error {
 	for {
 		if c.isConnected {
