@@ -74,6 +74,40 @@ func TestPublishToQueueAndConsume(t *testing.T) {
 	assert.Nil(t, err)
 }
 
+func TestPublishToFanoutExchangeAndConsume(t *testing.T) {
+	client := createClient()
+
+	time.Sleep(2 * time.Second)
+
+	exchangeName := "unit-test-exchange-fanout"
+	err := client.DeclareExchange(exchangeName, "fanout", false, false, false, true, nil)
+
+	assert.Nil(t, err)
+
+	consumeQueue, err := client.DeclareQueueForExchange("", exchangeName, []string{}, false, false, false, true, nil)
+
+	assert.Nil(t, err)
+
+	err = client.Publish([]byte(validPayloadOne), exchangeName, "")
+	err = client.Publish([]byte(validPayloadTwo), exchangeName, "")
+
+	assert.Nil(t, err)
+
+	go client.Consume(context.TODO(), testHandler(t), consumeQueue)
+
+	time.Sleep(2 * time.Second)
+
+	assert.Nil(t, err)
+
+	err = client.DeleteQueue(consumeQueue, false, true, false)
+
+	assert.Nil(t, err)
+
+	err = client.DeleteExchange(exchangeName, false, false)
+
+	assert.Nil(t, err)
+}
+
 func TestPublishToDirectExchangeWithRoutingKeyAndConsume(t *testing.T) {
 	client := createClient()
 
@@ -113,22 +147,29 @@ func TestPublishToDirectExchangeWithRoutingKeyAndConsume(t *testing.T) {
 	assert.Nil(t, err)
 }
 
-func TestPublishToFanoutExchangeAndConsume(t *testing.T) {
+func TestPublishToTopicExchangeWithRoutingKeyAndConsumeWithWildcard(t *testing.T) {
 	client := createClient()
 
 	time.Sleep(2 * time.Second)
 
-	exchangeName := "unit-test-exchange-fanout"
-	err := client.DeclareExchange(exchangeName, "fanout", false, false, false, true, nil)
+	exchangeName := "unit-test-exchange-topic"
+	err := client.DeclareExchange(exchangeName, "topic", false, false, false, true, nil)
 
 	assert.Nil(t, err)
 
-	consumeQueue, err := client.DeclareQueueForExchange("", exchangeName, []string{}, false, false, false, true, nil)
+	bindKeyOne := "test.one"
+	bindKeyTwo := "test.two"
+
+	consumeQueue, err := client.DeclareQueueForExchange("", exchangeName, []string{"test.*"}, false, false, false, true, nil)
 
 	assert.Nil(t, err)
 
-	err = client.Publish([]byte(validPayloadOne), exchangeName, "")
-	err = client.Publish([]byte(validPayloadTwo), exchangeName, "")
+	err = client.Publish([]byte(validPayloadOne), exchangeName, bindKeyOne)
+	err = client.Publish([]byte(validPayloadTwo), exchangeName, bindKeyTwo)
+
+	assert.Nil(t, err)
+
+	err = client.Publish([]byte(invalidPayload), exchangeName, "dont consume me") // this should not be consumed
 
 	assert.Nil(t, err)
 
