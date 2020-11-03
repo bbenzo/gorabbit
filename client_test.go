@@ -267,7 +267,7 @@ func TestPublishToTopicExchangeWithRoutingKeyAndConsumeWithWildcard(t *testing.T
 		NoWait:      true,
 		Args:        nil,
 		Exchange:    exchangeName,
-		BindingKeys: []string{bindKeyOne, bindKeyTwo},
+		BindingKeys: []string{"test.*"},
 	}
 	consumeQueue, err := client.DeclareQueueForExchange(queueSettings)
 
