@@ -160,7 +160,7 @@ func (c *client) declareRegisteredExchanges() error {
 	for _, settings := range c.exchanges {
 		err := c.DeclareExchange(settings)
 		if err != nil {
-			return errors.New("failed to declare exchange: " + settings.name)
+			return errors.New("failed to declare exchange: " + settings.Name)
 		}
 	}
 
@@ -170,16 +170,16 @@ func (c *client) declareRegisteredExchanges() error {
 
 func (c *client) declareRegisteredQueues() error {
 	for name, settings := range c.queues {
-		if settings.exchange != "" {
+		if settings.Exchange != "" {
 			_, err := c.DeclareQueueForExchange(settings)
 			if err != nil {
-				return errors.New("failed to declare queue " + name)
+				return errors.New("failed to declare Queue " + name)
 			}
 
 		} else {
 			_, err := c.DeclareQueue(settings)
 			if err != nil {
-				return errors.New("failed to declare queue " + name)
+				return errors.New("failed to declare Queue " + name)
 			}
 		}
 	}
@@ -190,7 +190,7 @@ func (c *client) declareRegisteredQueues() error {
 
 func (c *client) startConsumers() {
 	for _, settings := range c.consumers {
-		go c.Consume(settings.cancelCtx, settings) // TODO handle errors with chan and let reconnect fail, if err != nil
+		go c.Consume(settings.CancelCtx, settings) // TODO handle errors with chan and let reconnect fail, if err != nil
 	}
 
 	log.Println(fmt.Sprintf("started up %v registered consumers", len(c.consumers)))
@@ -279,7 +279,7 @@ func (c *client) UnsafePublish(data []byte, exchange, routingKey string) error {
 	)
 }
 
-// Consume will consume a queue and apply a HandlerFunc to the received message
+// Consume will consume a Queue and apply a HandlerFunc to the received message
 func (c *client) Consume(cancelCtx context.Context, settings *ConsumerSettings) error {
 	if settings == nil {
 		return errors.New("missing consumer settings")
@@ -300,13 +300,13 @@ func (c *client) Consume(cancelCtx context.Context, settings *ConsumerSettings) 
 	var connectionDropped bool
 
 	msgs, err := c.channel.Consume(
-		settings.queue,
-		settings.consumer,
-		settings.autoAck,
-		settings.exclusive,
-		settings.noLocal,
-		settings.noWait,
-		settings.args,
+		settings.Queue,
+		settings.Consumer,
+		settings.AutoAck,
+		settings.Exclusive,
+		settings.NoLocal,
+		settings.NoWait,
+		settings.Args,
 	)
 	if err != nil {
 		return err
@@ -328,7 +328,7 @@ func (c *client) Consume(cancelCtx context.Context, settings *ConsumerSettings) 
 					return
 				}
 
-				err := settings.handlerFunc(&msg)
+				err := settings.HandlerFunc(&msg)
 				if err != nil {
 					log.Println(fmt.Sprintf("Error during msg handling: %v", err.Error()))
 				}
@@ -345,54 +345,54 @@ func (c *client) Consume(cancelCtx context.Context, settings *ConsumerSettings) 
 	return nil
 }
 
-// DeclareQueue creates a queue if non exists
+// DeclareQueue creates a Queue if non exists
 func (c *client) DeclareQueue(settings *QueueSettings) (string, error) {
 	queue, err := c.channel.QueueDeclare(
-		settings.name,
-		settings.durable,
-		settings.autoDelete,
-		settings.exclusive,
-		settings.noWait,
-		settings.args,
+		settings.Name,
+		settings.Durable,
+		settings.AutoDelete,
+		settings.Exclusive,
+		settings.NoWait,
+		settings.Args,
 	)
 	if err != nil {
-		return "", errors.Wrap(err, "failed to declare queue")
+		return "", errors.Wrap(err, "failed to declare Queue")
 	}
 
-	c.queues[settings.name] = settings
+	c.queues[settings.Name] = settings
 	return queue.Name, err
 }
 
-// DeclareQueueForExchange creates a queue for an exchange, if non exists
+// DeclareQueueForExchange creates a Queue for an exchange, if non exists
 func (c *client) DeclareQueueForExchange(settings *QueueSettings) (string, error) {
 	queue, err := c.channel.QueueDeclare(
-		settings.name,
-		settings.durable,
-		settings.autoDelete,
-		settings.exclusive,
-		settings.noWait,
-		settings.args,
+		settings.Name,
+		settings.Durable,
+		settings.AutoDelete,
+		settings.Exclusive,
+		settings.NoWait,
+		settings.Args,
 	)
 	if err != nil {
-		return "", errors.Wrap(err, "failed to declare queue")
+		return "", errors.Wrap(err, "failed to declare Queue")
 	}
 
-	for _, key := range settings.bindingKeys {
-		err = c.channel.QueueBind(queue.Name, key, settings.exchange, settings.noWait, settings.args)
+	for _, key := range settings.BindingKeys {
+		err = c.channel.QueueBind(queue.Name, key, settings.Exchange, settings.NoWait, settings.Args)
 		if err != nil {
-			return "", errors.Wrap(err, "failed to bind queue to exchange "+settings.exchange)
+			return "", errors.Wrap(err, "failed to bind Queue to exchange "+settings.Exchange)
 		}
 	}
 
 	// if no specific binding keys are provided, listen to all messages
-	if len(settings.bindingKeys) == 0 {
-		err = c.channel.QueueBind(queue.Name, "", settings.exchange, settings.noWait, settings.args)
+	if len(settings.BindingKeys) == 0 {
+		err = c.channel.QueueBind(queue.Name, "", settings.Exchange, settings.NoWait, settings.Args)
 		if err != nil {
-			return "", errors.Wrap(err, "failed to bind queue to exchange "+settings.exchange)
+			return "", errors.Wrap(err, "failed to bind Queue to exchange "+settings.Exchange)
 		}
 	}
 
-	c.queues[settings.name] = settings
+	c.queues[settings.Name] = settings
 
 	return queue.Name, err
 }
@@ -400,19 +400,19 @@ func (c *client) DeclareQueueForExchange(settings *QueueSettings) (string, error
 // DeclareExchange creates an exchange if it does not already exist
 func (c *client) DeclareExchange(settings *ExchangeSettings) error {
 	err := c.channel.ExchangeDeclare(
-		settings.name,
-		settings.kind,
-		settings.durable,
-		settings.autoDelete,
-		settings.internal,
-		settings.noWait,
-		settings.args,
+		settings.Name,
+		settings.Kind,
+		settings.Durable,
+		settings.AutoDelete,
+		settings.Internal,
+		settings.NoWait,
+		settings.Args,
 	)
 	if err != nil {
 		return errors.Wrap(err, "failed to declare exchange")
 	}
 
-	c.exchanges[settings.name] = settings
+	c.exchanges[settings.Name] = settings
 	return err
 }
 
@@ -421,16 +421,16 @@ func (c *client) IsConnected() bool {
 	return c.isConnected
 }
 
-// DeleteQueue deletes a queue
+// DeleteQueue deletes a Queue
 func (c *client) DeleteQueue(name string, ifUnused, ifEmpty, noWait bool) error {
 	purgedMessages, err := c.channel.QueueDelete(name, ifUnused, ifEmpty, noWait)
 	if err != nil {
-		return errors.Wrap(err, "failed to delete queue")
+		return errors.Wrap(err, "failed to delete Queue")
 	}
 
 	delete(c.queues, name)
 
-	log.Println(fmt.Sprintf(`deleted queue. purged %v messages`, purgedMessages))
+	log.Println(fmt.Sprintf(`deleted Queue. purged %v messages`, purgedMessages))
 	return nil
 }
 

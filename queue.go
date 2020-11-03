@@ -1,13 +1,13 @@
 package gorabbit
 
-// QueueSettings holds the settings to declare and consume a queue
+// QueueSettings holds the settings to declare and consume a Queue
 type QueueSettings struct {
-	name             string
-	durable          bool
-	autoDelete       bool
-	exclusive        bool
-	noWait           bool
-	args             map[string]interface{}
-	exchange         string
-	bindingKeys      []string
+	Name        string
+	Durable     bool
+	AutoDelete  bool
+	Exclusive   bool
+	NoWait      bool
+	Args        map[string]interface{}
+	Exchange    string
+	BindingKeys []string
 }

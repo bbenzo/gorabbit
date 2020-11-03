@@ -2,15 +2,15 @@ package gorabbit
 
 import "context"
 
-// ConsumerSettings holds the settings for the queue consumer
+// ConsumerSettings holds the settings for the Queue consumer
 type ConsumerSettings struct {
-	consumer    string
-	autoAck     bool
-	exclusive   bool
-	noLocal     bool
-	noWait      bool
-	args        map[string]interface{}
-	queue       string
-	handlerFunc HandlerFunc
-	cancelCtx   context.Context
+	Consumer    string
+	AutoAck     bool
+	Exclusive   bool
+	NoLocal     bool
+	NoWait      bool
+	Args        map[string]interface{}
+	Queue       string
+	HandlerFunc HandlerFunc
+	CancelCtx   context.Context
 }

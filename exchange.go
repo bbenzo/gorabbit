@@ -2,11 +2,11 @@ package gorabbit
 
 // ExchangeSettings holds the settings to declare an exchange
 type ExchangeSettings struct {
-	name       string
-	kind       string
-	durable    bool
-	autoDelete bool
-	internal   bool
-	noWait     bool
-	args       map[string]interface{}
+	Name       string
+	Kind       string
+	Durable    bool
+	AutoDelete bool
+	Internal   bool
+	NoWait     bool
+	Args       map[string]interface{}
 }
