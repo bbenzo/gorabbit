@@ -1,4 +1,4 @@
-module go-rabbitmq-client
+module github.com/bbenzo/gorabbit
 
 go 1.15
 
