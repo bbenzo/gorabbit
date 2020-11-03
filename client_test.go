@@ -1,3 +1,5 @@
+// +build integration
+
 package gorabbit
 
 import (
@@ -10,6 +12,8 @@ import (
 	"testing"
 	"time"
 )
+
+// ATTENTION: These tests need a rabbitMQ instance running on localhost:5672
 
 const (
 	validPayloadOne = "me likes"
@@ -25,7 +29,9 @@ func TestConnection(t *testing.T) {
 	assert.True(t, client.IsConnected())
 
 	process, _ := os.FindProcess(os.Getpid())
-	process.Signal(os.Interrupt)
+	err := process.Signal(os.Interrupt)
+
+	assert.Nil(t, err)
 
 	time.Sleep(500 * time.Millisecond)
 
@@ -37,8 +43,16 @@ func TestDeclareAndDeleteQueue(t *testing.T) {
 
 	time.Sleep(2 * time.Second)
 
-	name := "unit-test-q-1"
-	queue, err := client.DeclareQueue(name, false, false, false, false, nil)
+	name := "unit-test-queue-1"
+	queueSettings := &QueueSettings{
+		name:       name,
+		durable:    false,
+		autoDelete: false,
+		exclusive:  false,
+		noWait:     false,
+		args:       nil,
+	}
+	queue, err := client.DeclareQueue(queueSettings)
 
 	assert.Nil(t, err)
 	assert.Equal(t, name, queue)
@@ -53,8 +67,16 @@ func TestPublishToQueueAndConsume(t *testing.T) {
 
 	time.Sleep(2 * time.Second)
 
-	name := "unit-test-q-2"
-	queue, err := client.DeclareQueue(name, false, false, false, true, nil)
+	name := "unit-test-queue-2"
+	queueSettings := &QueueSettings{
+		name:       name,
+		durable:    false,
+		autoDelete: false,
+		exclusive:  false,
+		noWait:     false,
+		args:       nil,
+	}
+	queue, err := client.DeclareQueue(queueSettings)
 
 	assert.Nil(t, err)
 	assert.Equal(t, name, queue)
@@ -63,11 +85,18 @@ func TestPublishToQueueAndConsume(t *testing.T) {
 
 	assert.Nil(t, err)
 
-	go client.Consume(context.TODO(), testHandler(t), queue)
-
-	time.Sleep(2 * time.Second)
+	go client.Consume(context.TODO(), &ConsumerSettings{
+		consumer:  "",
+		autoAck:   false,
+		exclusive: false,
+		noLocal:   false,
+		noWait:    false,
+		args:      nil,
+	})
 
 	assert.Nil(t, err)
+
+	time.Sleep(2 * time.Second)
 
 	err = client.DeleteQueue(queue, false, true, false)
 
@@ -80,20 +109,52 @@ func TestPublishToFanoutExchangeAndConsume(t *testing.T) {
 	time.Sleep(2 * time.Second)
 
 	exchangeName := "unit-test-exchange-fanout"
-	err := client.DeclareExchange(exchangeName, "fanout", false, false, false, true, nil)
+	exchangeSettings := &ExchangeSettings{
+		name:       exchangeName,
+		kind:       "fanout",
+		durable:    false,
+		autoDelete: false,
+		internal:   false,
+		noWait:     true,
+		args:       nil,
+	}
+
+	err := client.DeclareExchange(exchangeSettings)
 
 	assert.Nil(t, err)
 
-	consumeQueue, err := client.DeclareQueueForExchange("", exchangeName, []string{}, false, false, false, true, nil)
+	queueSettings := &QueueSettings{
+		name:        "",
+		durable:     false,
+		autoDelete:  false,
+		exclusive:   false,
+		noWait:      true,
+		args:        nil,
+		exchange:    exchangeName,
+		bindingKeys: []string{},
+	}
+	consumeQueue, err := client.DeclareQueueForExchange(queueSettings)
 
 	assert.Nil(t, err)
 
 	err = client.Publish([]byte(validPayloadOne), exchangeName, "")
+
+	assert.Nil(t, err)
+
 	err = client.Publish([]byte(validPayloadTwo), exchangeName, "")
 
 	assert.Nil(t, err)
 
-	go client.Consume(context.TODO(), testHandler(t), consumeQueue)
+	go client.Consume(context.TODO(), &ConsumerSettings{
+		consumer:    "",
+		autoAck:     false,
+		exclusive:   false,
+		noLocal:     false,
+		noWait:      false,
+		handlerFunc: testHandler(t),
+		cancelCtx:   context.TODO(),
+		args:        nil,
+	})
 
 	time.Sleep(2 * time.Second)
 
@@ -114,13 +175,33 @@ func TestPublishToDirectExchangeWithRoutingKeyAndConsume(t *testing.T) {
 	time.Sleep(2 * time.Second)
 
 	exchangeName := "unit-test-exchange-direct"
-	err := client.DeclareExchange(exchangeName, "direct", false, false, false, true, nil)
+	exchangeSettings := &ExchangeSettings{
+		name:       exchangeName,
+		kind:       "direct",
+		durable:    false,
+		autoDelete: false,
+		internal:   false,
+		noWait:     true,
+		args:       nil,
+	}
+
+	err := client.DeclareExchange(exchangeSettings)
 
 	assert.Nil(t, err)
 
 	bindKey := "test-bind-key"
 
-	consumeQueue, err := client.DeclareQueueForExchange("", exchangeName, []string{bindKey}, false, false, false, true, nil)
+	queueSettings := &QueueSettings{
+		name:        "",
+		durable:     false,
+		autoDelete:  false,
+		exclusive:   false,
+		noWait:      true,
+		args:        nil,
+		exchange:    exchangeName,
+		bindingKeys: []string{bindKey},
+	}
+	consumeQueue, err := client.DeclareQueueForExchange(queueSettings)
 
 	assert.Nil(t, err)
 
@@ -132,7 +213,16 @@ func TestPublishToDirectExchangeWithRoutingKeyAndConsume(t *testing.T) {
 
 	assert.Nil(t, err)
 
-	go client.Consume(context.TODO(), testHandler(t), consumeQueue)
+	go client.Consume(context.TODO(), &ConsumerSettings{
+		consumer:    "",
+		autoAck:     false,
+		exclusive:   false,
+		noLocal:     false,
+		noWait:      false,
+		args:        nil,
+		handlerFunc: testHandler(t),
+		cancelCtx:   context.TODO(),
+	})
 
 	time.Sleep(2 * time.Second)
 
@@ -153,14 +243,33 @@ func TestPublishToTopicExchangeWithRoutingKeyAndConsumeWithWildcard(t *testing.T
 	time.Sleep(2 * time.Second)
 
 	exchangeName := "unit-test-exchange-topic"
-	err := client.DeclareExchange(exchangeName, "topic", false, false, false, true, nil)
+	exchangeSettings := &ExchangeSettings{
+		name:       exchangeName,
+		kind:       "topic",
+		durable:    false,
+		autoDelete: false,
+		internal:   false,
+		noWait:     true,
+		args:       nil,
+	}
+	err := client.DeclareExchange(exchangeSettings)
 
 	assert.Nil(t, err)
 
 	bindKeyOne := "test.one"
 	bindKeyTwo := "test.two"
 
-	consumeQueue, err := client.DeclareQueueForExchange("", exchangeName, []string{"test.*"}, false, false, false, true, nil)
+	queueSettings := &QueueSettings{
+		name:        "",
+		durable:     false,
+		autoDelete:  false,
+		exclusive:   false,
+		noWait:      true,
+		args:        nil,
+		exchange:    exchangeName,
+		bindingKeys: []string{bindKeyOne, bindKeyTwo},
+	}
+	consumeQueue, err := client.DeclareQueueForExchange(queueSettings)
 
 	assert.Nil(t, err)
 
@@ -173,9 +282,95 @@ func TestPublishToTopicExchangeWithRoutingKeyAndConsumeWithWildcard(t *testing.T
 
 	assert.Nil(t, err)
 
-	go client.Consume(context.TODO(), testHandler(t), consumeQueue)
+	go client.Consume(context.TODO(), &ConsumerSettings{
+		consumer:    "",
+		autoAck:     false,
+		exclusive:   false,
+		noLocal:     false,
+		noWait:      false,
+		args:        nil,
+		handlerFunc: testHandler(t),
+		cancelCtx:   context.TODO(),
+	})
 
 	time.Sleep(2 * time.Second)
+
+	assert.Nil(t, err)
+
+	err = client.DeleteQueue(consumeQueue, false, true, false)
+
+	assert.Nil(t, err)
+
+	err = client.DeleteExchange(exchangeName, false, false)
+
+	assert.Nil(t, err)
+}
+
+func TestPublishToFanoutExchangeAndConsumeWithMultipleConsumers(t *testing.T) {
+	client := createClient()
+
+	time.Sleep(2 * time.Second)
+
+	exchangeName := "unit-test-exchange-fanout-multi"
+	exchangeSettings := &ExchangeSettings{
+		name:       exchangeName,
+		kind:       "fanout",
+		durable:    false,
+		autoDelete: false,
+		internal:   false,
+		noWait:     true,
+		args:       nil,
+	}
+
+	err := client.DeclareExchange(exchangeSettings)
+
+	assert.Nil(t, err)
+
+	queueSettings := &QueueSettings{
+		name:        "",
+		durable:     false,
+		autoDelete:  false,
+		exclusive:   false,
+		noWait:      true,
+		args:        nil,
+		exchange:    exchangeName,
+		bindingKeys: []string{},
+	}
+	consumeQueue, err := client.DeclareQueueForExchange(queueSettings)
+
+	assert.Nil(t, err)
+
+	err = client.Publish([]byte(validPayloadOne), exchangeName, "")
+
+	assert.Nil(t, err)
+
+	err = client.Publish([]byte(validPayloadTwo), exchangeName, "")
+
+	assert.Nil(t, err)
+
+	go client.Consume(context.TODO(), &ConsumerSettings{
+		consumer:    "",
+		autoAck:     false,
+		exclusive:   false,
+		noLocal:     false,
+		noWait:      false,
+		handlerFunc: testHandler(t),
+		cancelCtx:   context.TODO(),
+		args:        nil,
+	})
+
+	go client.Consume(context.TODO(), &ConsumerSettings{
+		consumer:    "",
+		autoAck:     false,
+		exclusive:   false,
+		noLocal:     false,
+		noWait:      false,
+		handlerFunc: testHandler(t),
+		cancelCtx:   context.TODO(),
+		args:        nil,
+	})
+
+	time.Sleep(2000 * time.Second)
 
 	assert.Nil(t, err)
 

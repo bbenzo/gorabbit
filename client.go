@@ -9,7 +9,6 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,9 +17,10 @@ import (
 )
 
 var (
-	ErrDisconnected = errors.New("disconnected from rabbitmq, trying to reconnect")
+	ErrDisconnected = errors.New("disconnected from rabbitMQ, trying to reconnect")
 )
 
+// HandlerFunc takes a amqp delivery and process it
 type HandlerFunc func(msg *amqp.Delivery) error
 
 type client struct {
@@ -30,51 +30,54 @@ type client struct {
 	notifyConnectionError chan *amqp.Error
 	notifyConfirm         chan amqp.Confirmation
 	isConnected           bool
-	threads               int
 	reconnectDelay        time.Duration
 	resendDelay           time.Duration
+	queues                map[string]*QueueSettings
+	exchanges             map[string]*ExchangeSettings
+	consumers             []*ConsumerSettings
 	wg                    *sync.WaitGroup
 }
 
+// Client defines the methods of the rabbitMQ client
 type Client interface {
-	Publish(data []byte, exchange, queue string) error
+	Publish(data []byte, exchange, key string) error
 	UnsafePublish(data []byte, exchange, key string) error
-	Consume(ctx context.Context, handlerFunc HandlerFunc, queue string) error
-	DeclareQueue(name string, durable, autoDelete, exclusive, noWait bool, args map[string]interface{}) (string, error)
+	Consume(ctx context.Context, settings *ConsumerSettings) error
+	DeclareQueue(settings *QueueSettings) (string, error)
 	DeleteQueue(name string, ifUnused, ifEmpty, noWait bool) error
-	DeclareExchange(name, kind string, durable, autoDelete, internal, noWait bool, args map[string]interface{}) error
+	DeclareExchange(settings *ExchangeSettings) error
 	DeleteExchange(name string, ifUnused, noWait bool) error
-	DeclareQueueForExchange(name, exchange string, bindingKeys []string, durable, autoDelete, exclusive, noWait bool, args map[string]interface{}) (string, error)
+	DeclareQueueForExchange(settings *QueueSettings) (string, error)
 	IsConnected() bool
 }
 
+// New Returns a new instance of the Client and opens a connection to the rabbitmq server
 func New(user, password, host string, port int, reconnectDelay, resendDelay time.Duration) Client {
-	threads := runtime.GOMAXPROCS(0)
-	if numCPU := runtime.NumCPU(); numCPU > threads {
-		threads = numCPU
-	}
-
 	doneChan := make(chan os.Signal, 1)
 	signal.Notify(doneChan, syscall.SIGINT, syscall.SIGTERM)
 
+	// set default reconnect delay
 	if reconnectDelay == 0 {
 		reconnectDelay = 5 * time.Second
 	}
 
+	// set default resend delay
 	if resendDelay == 0 {
 		resendDelay = time.Second
 	}
 
+	// init client
 	client := client{
-		threads:        threads,
 		done:           doneChan,
 		reconnectDelay: reconnectDelay,
 		resendDelay:    resendDelay,
+		queues:         make(map[string]*QueueSettings),
+		exchanges:      make(map[string]*ExchangeSettings),
 		wg:             &sync.WaitGroup{},
 	}
-	client.wg.Add(threads)
 
 	go client.handleReconnect(address(user, password, host, port))
+
 	return &client
 }
 
@@ -97,28 +100,37 @@ func address(user, password, host string, port int) string {
 	return sb.String()
 }
 
-// handleReconnect will wait for a connection error on
-// notifyConnectionError, and then continuously attempt to reconnect.
+// handleReconnect will wait for a connection error on notifyConnectionError and then attempt to reconnect.
+// In addition, it will redeclare all previously declared exchanges and queues and start
+// all registered consumers
 func (c *client) handleReconnect(addr string) {
 	for {
 		c.isConnected = false
 		t := time.Now()
 
-		fmt.Printf("Attempting to connect to rabbitMQ: %s\n", addr)
+		fmt.Printf("attempting to connect to rabbitMQ: %s\n", addr)
 
-		var retryCount int
+		var retries int
 		for !c.connect(addr) {
 			select {
 			case <-c.done:
 				c.isConnected = false
 				return
-			case <-time.After(c.reconnectDelay + time.Duration(retryCount)*time.Second):
+			case <-time.After(c.reconnectDelay + time.Duration(retries)*time.Second):
 				log.Println("disconnected from rabbitMQ and failed to connect")
-				retryCount++
+				retries++
 			}
 		}
 
 		log.Println(fmt.Sprintf("connected to rabbitMQ in: %v ms", time.Since(t).Milliseconds()))
+
+		err := c.handleReconnectConsumers()
+		if err != nil {
+			log.Printf("failed to reconnect consumers: %v", err.Error())
+			c.isConnected = false
+			continue
+		}
+
 		select {
 		case <-c.done:
 			c.isConnected = false
@@ -128,8 +140,63 @@ func (c *client) handleReconnect(addr string) {
 	}
 }
 
-// connect will make a single attempt to connect to
-// RabbitMq. It returns the success of the attempt.
+func (c *client) handleReconnectConsumers() error {
+	err := c.declareRegisteredExchanges()
+	if err != nil {
+		return err
+	}
+
+	err = c.declareRegisteredQueues()
+	if err != nil {
+		return err
+	}
+
+	c.startConsumers()
+
+	return nil
+}
+
+func (c *client) declareRegisteredExchanges() error {
+	for _, settings := range c.exchanges {
+		err := c.DeclareExchange(settings)
+		if err != nil {
+			return errors.New("failed to declare exchange: " + settings.name)
+		}
+	}
+
+	log.Println(fmt.Sprintf("started up %v registered exchanges", len(c.exchanges)))
+	return nil
+}
+
+func (c *client) declareRegisteredQueues() error {
+	for name, settings := range c.queues {
+		if settings.exchange != "" {
+			_, err := c.DeclareQueueForExchange(settings)
+			if err != nil {
+				return errors.New("failed to declare queue " + name)
+			}
+
+		} else {
+			_, err := c.DeclareQueue(settings)
+			if err != nil {
+				return errors.New("failed to declare queue " + name)
+			}
+		}
+	}
+
+	log.Println(fmt.Sprintf("started up %v registered queues", len(c.queues)))
+	return nil
+}
+
+func (c *client) startConsumers() {
+	for _, settings := range c.consumers {
+		go c.Consume(settings.cancelCtx, settings) // TODO handle errors with chan and let reconnect fail, if err != nil
+	}
+
+	log.Println(fmt.Sprintf("started up %v registered consumers", len(c.consumers)))
+}
+
+// connect will make a single attempt to connect to RabbitMQ
 func (c *client) connect(addr string) bool {
 	conn, err := amqp.Dial(addr)
 	if err != nil {
@@ -154,7 +221,7 @@ func (c *client) connect(addr string) bool {
 	return true
 }
 
-// changeConnection takes a new connection and updates the channel listeners to reflect this.
+// changeConnection takes a new connection and updates the channel listeners
 func (c *client) changeConnection(connection *amqp.Connection, channel *amqp.Channel) {
 	c.connection = connection
 	c.channel = channel
@@ -165,7 +232,7 @@ func (c *client) changeConnection(connection *amqp.Connection, channel *amqp.Cha
 }
 
 // Publish will publish the data to an exchange with a routingKey.
-// If no confirms are received until within the resendTimeout,
+// If no confirms are received until within the resendDelay,
 // it continuously resends messages until a confirmation is received.
 // This will block until the server sends a confirm.
 func (c *client) Publish(data []byte, exchange, routingKey string) error {
@@ -213,7 +280,11 @@ func (c *client) UnsafePublish(data []byte, exchange, routingKey string) error {
 }
 
 // Consume will consume a queue and apply a HandlerFunc to the received message
-func (c *client) Consume(cancelCtx context.Context, handlerFunc HandlerFunc, queue string) error {
+func (c *client) Consume(cancelCtx context.Context, settings *ConsumerSettings) error {
+	if settings == nil {
+		return errors.New("missing consumer settings")
+	}
+
 	for {
 		if c.isConnected {
 			break
@@ -228,42 +299,42 @@ func (c *client) Consume(cancelCtx context.Context, handlerFunc HandlerFunc, que
 
 	var connectionDropped bool
 
-	for i := 1; i <= c.threads; i++ {
-		msgs, err := c.channel.Consume(
-			queue,
-			"",    // Consumer
-			false, // Auto-Ack
-			false, // Exclusive
-			false, // No-local
-			false, // No-Wait
-			nil,   // Args
-		)
-		if err != nil {
-			return err
-		}
+	msgs, err := c.channel.Consume(
+		settings.queue,
+		settings.consumer,
+		settings.autoAck,
+		settings.exclusive,
+		settings.noLocal,
+		settings.noWait,
+		settings.args,
+	)
+	if err != nil {
+		return err
+	}
 
-		c.wg.Add(1)
-		go func() {
-			defer c.wg.Done()
-			for {
-				select {
-				case <-cancelCtx.Done():
+	c.consumers = append(c.consumers, settings)
+
+	c.wg.Add(1)
+	go func() {
+		defer c.wg.Done()
+
+		for {
+			select {
+			case <-cancelCtx.Done():
+				return
+			case msg, ok := <-msgs:
+				if !ok {
+					connectionDropped = true
 					return
-				case msg, ok := <-msgs:
-					if !ok {
-						connectionDropped = true
-						return
-					}
+				}
 
-					err := handlerFunc(&msg)
-					if err != nil {
-						log.Println(fmt.Sprintf("Error during msg handling: %v", err.Error()))
-					}
+				err := settings.handlerFunc(&msg)
+				if err != nil {
+					log.Println(fmt.Sprintf("Error during msg handling: %v", err.Error()))
 				}
 			}
-		}()
-
-	}
+		}
+	}()
 
 	c.wg.Wait()
 
@@ -274,60 +345,103 @@ func (c *client) Consume(cancelCtx context.Context, handlerFunc HandlerFunc, que
 	return nil
 }
 
-func (c *client) DeclareQueue(name string, durable, autoDelete, exclusive, noWait bool, args map[string]interface{}) (string, error) {
-	queue, err := c.channel.QueueDeclare(name, durable, autoDelete, exclusive, noWait, args)
+// DeclareQueue creates a queue if non exists
+func (c *client) DeclareQueue(settings *QueueSettings) (string, error) {
+	queue, err := c.channel.QueueDeclare(
+		settings.name,
+		settings.durable,
+		settings.autoDelete,
+		settings.exclusive,
+		settings.noWait,
+		settings.args,
+	)
 	if err != nil {
 		return "", errors.Wrap(err, "failed to declare queue")
 	}
 
+	c.queues[settings.name] = settings
 	return queue.Name, err
 }
 
-func (c *client) DeclareQueueForExchange(queueName, exchange string, bindingKeys []string, durable, autoDelete, exclusive, noWait bool, args map[string]interface{}) (string, error) {
-	queue, err := c.channel.QueueDeclare(queueName, durable, autoDelete, exclusive, noWait, args)
+// DeclareQueueForExchange creates a queue for an exchange, if non exists
+func (c *client) DeclareQueueForExchange(settings *QueueSettings) (string, error) {
+	queue, err := c.channel.QueueDeclare(
+		settings.name,
+		settings.durable,
+		settings.autoDelete,
+		settings.exclusive,
+		settings.noWait,
+		settings.args,
+	)
 	if err != nil {
 		return "", errors.Wrap(err, "failed to declare queue")
 	}
 
-	for _, key := range bindingKeys {
-		err = c.channel.QueueBind(queue.Name, key, exchange, noWait, args)
+	for _, key := range settings.bindingKeys {
+		err = c.channel.QueueBind(queue.Name, key, settings.exchange, settings.noWait, settings.args)
 		if err != nil {
-			return "", errors.Wrap(err, "failed to bind queue to exchange "+exchange)
+			return "", errors.Wrap(err, "failed to bind queue to exchange "+settings.exchange)
 		}
 	}
 
 	// if no specific binding keys are provided, listen to all messages
-	if len(bindingKeys) == 0 {
-		err = c.channel.QueueBind(queue.Name, "", exchange, noWait, args)
+	if len(settings.bindingKeys) == 0 {
+		err = c.channel.QueueBind(queue.Name, "", settings.exchange, settings.noWait, settings.args)
 		if err != nil {
-			return "", errors.Wrap(err, "failed to bind queue to exchange "+exchange)
+			return "", errors.Wrap(err, "failed to bind queue to exchange "+settings.exchange)
 		}
 	}
+
+	c.queues[settings.name] = settings
 
 	return queue.Name, err
 }
 
-func (c *client) DeclareExchange(name, kind string, durable, autoDelete, internal, noWait bool, args map[string]interface{}) error {
-	err := c.channel.ExchangeDeclare(name, kind, durable, autoDelete, internal, noWait, args)
+// DeclareExchange creates an exchange if it does not already exist
+func (c *client) DeclareExchange(settings *ExchangeSettings) error {
+	err := c.channel.ExchangeDeclare(
+		settings.name,
+		settings.kind,
+		settings.durable,
+		settings.autoDelete,
+		settings.internal,
+		settings.noWait,
+		settings.args,
+	)
 	if err != nil {
 		return errors.Wrap(err, "failed to declare exchange")
 	}
+
+	c.exchanges[settings.name] = settings
 	return err
 }
 
+// IsConnected returns if the client is connected to the rabbitMQ server
 func (c *client) IsConnected() bool {
 	return c.isConnected
 }
 
+// DeleteQueue deletes a queue
 func (c *client) DeleteQueue(name string, ifUnused, ifEmpty, noWait bool) error {
 	purgedMessages, err := c.channel.QueueDelete(name, ifUnused, ifEmpty, noWait)
+	if err != nil {
+		return errors.Wrap(err, "failed to delete queue")
+	}
+
+	delete(c.queues, name)
 
 	log.Println(fmt.Sprintf(`deleted queue. purged %v messages`, purgedMessages))
-	return err
+	return nil
 }
 
+// DeleteExchange deletes an exchange
 func (c *client) DeleteExchange(name string, ifUnused, noWait bool) error {
 	err := c.channel.ExchangeDelete(name, ifUnused, noWait)
+	if err != nil {
+		return errors.Wrap(err, "failed to delete exchange")
+	}
+
+	delete(c.exchanges, name)
 
 	log.Println(fmt.Sprintf(`deleted exchange %s`, name))
 	return err
