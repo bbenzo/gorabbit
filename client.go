@@ -29,6 +29,7 @@ type client struct {
 	done                  chan os.Signal
 	notifyConnectionError chan *amqp.Error
 	notifyConfirm         chan amqp.Confirmation
+	notifyReturn          chan amqp.Return
 	isConnected           bool
 	reconnectDelay        time.Duration
 	resendDelay           time.Duration
@@ -227,6 +228,8 @@ func (c *client) changeConnection(connection *amqp.Connection, channel *amqp.Cha
 	c.channel = channel
 	c.notifyConnectionError = make(chan *amqp.Error)
 	c.notifyConfirm = make(chan amqp.Confirmation)
+	c.notifyReturn = make(chan amqp.Return)
+	c.channel.NotifyReturn(c.notifyReturn)
 	c.channel.NotifyClose(c.notifyConnectionError)
 	c.channel.NotifyPublish(c.notifyConfirm)
 }
@@ -239,6 +242,7 @@ func (c *client) Publish(data []byte, exchange, routingKey string) error {
 	if !c.isConnected {
 		return errors.New("failed to publish: not connected")
 	}
+
 	for {
 		err := c.UnsafePublish(data, exchange, routingKey)
 		if err != nil {
@@ -253,7 +257,10 @@ func (c *client) Publish(data []byte, exchange, routingKey string) error {
 			if confirm.Ack {
 				return nil
 			}
-		case <-time.After(c.resendDelay):
+		case returned := <-c.notifyReturn:
+			log.Printf("failed to publish message. there seems to be no listening queue. message %v dropped", returned.MessageId)
+			return nil
+		case <-time.After(c.resendDelay * time.Second):
 		}
 	}
 }
