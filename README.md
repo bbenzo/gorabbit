@@ -7,8 +7,29 @@ the AMQP 0-9-1 protocol with [RabbitMQ](https://www.rabbitmq.com/).
 ## How to use
 
 ```go
+client := gorabbit.New(ConnectionSettings{
+    User:           "guest",
+    Password:       "guest",
+    Host:           "localhost",
+    Port:           5672,
+    ReconnectDelay: 0,
+    ResendDelay:    0,
+}, &zerolog.Logger{})
 
+client.Publish(data, "my-exchange", "my-queue")
+
+client.Consume(context.TODO(), ConsumerSettings{
+    Consumer:    "",
+    AutoAck:     false,
+    Exclusive:   false,
+    NoLocal:     false,
+    NoWait:      false,
+    HandlerFunc: someHandler,
+    CancelCtx:   context.TODO(),
+})
 ```
+
+Have a look at the tests to see more examples for applications.
 
 ## Run tests
 
