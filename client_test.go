@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/pkg/errors"
+	"github.com/rs/zerolog"
 	"github.com/streadway/amqp"
 	"github.com/stretchr/testify/assert"
 	"os"
@@ -19,7 +20,7 @@ const (
 	invalidPayload  = "me don't like"
 )
 
-func TestConnection(t *testing.T) {
+func TestConnectionIsKilledOnInterruptSignal(t *testing.T) {
 	client := createClient()
 
 	time.Sleep(2 * time.Second)
@@ -36,13 +37,21 @@ func TestConnection(t *testing.T) {
 	assert.False(t, client.IsConnected())
 }
 
+func TestNoMessageAttemptsAfterConnectionHasFailedRetries(t *testing.T) {
+	client := createClient()
+
+	time.Sleep(2 * time.Second)
+
+	assert.True(t, client.IsConnected())
+}
+
 func TestDeclareAndDeleteQueue(t *testing.T) {
 	client := createClient()
 
 	time.Sleep(2 * time.Second)
 
 	name := "unit-test-Queue-1"
-	queueSettings := &QueueSettings{
+	queueSettings := QueueSettings{
 		Name:       name,
 		Durable:    false,
 		AutoDelete: false,
@@ -66,7 +75,7 @@ func TestPublishToQueueAndConsume(t *testing.T) {
 	time.Sleep(2 * time.Second)
 
 	name := "unit-test-Queue-2"
-	queueSettings := &QueueSettings{
+	queueSettings := QueueSettings{
 		Name:       name,
 		Durable:    false,
 		AutoDelete: false,
@@ -83,7 +92,7 @@ func TestPublishToQueueAndConsume(t *testing.T) {
 
 	assert.Nil(t, err)
 
-	go client.Consume(context.TODO(), &ConsumerSettings{
+	go client.Consume(context.TODO(), ConsumerSettings{
 		Consumer:    "",
 		AutoAck:     false,
 		Exclusive:   false,
@@ -109,7 +118,7 @@ func TestPublishToFanoutExchangeAndConsume(t *testing.T) {
 	time.Sleep(2 * time.Second)
 
 	exchangeName := "unit-test-exchange-fanout"
-	exchangeSettings := &ExchangeSettings{
+	exchangeSettings := ExchangeSettings{
 		Name:       exchangeName,
 		Kind:       "fanout",
 		Durable:    false,
@@ -123,7 +132,7 @@ func TestPublishToFanoutExchangeAndConsume(t *testing.T) {
 
 	assert.Nil(t, err)
 
-	queueSettings := &QueueSettings{
+	queueSettings := QueueSettings{
 		Name:        "",
 		Durable:     false,
 		AutoDelete:  false,
@@ -145,7 +154,7 @@ func TestPublishToFanoutExchangeAndConsume(t *testing.T) {
 
 	assert.Nil(t, err)
 
-	go client.Consume(context.TODO(), &ConsumerSettings{
+	go client.Consume(context.TODO(), ConsumerSettings{
 		Consumer:    "",
 		AutoAck:     false,
 		Exclusive:   false,
@@ -175,7 +184,7 @@ func TestPublishToDirectExchangeWithRoutingKeyAndConsume(t *testing.T) {
 	time.Sleep(2 * time.Second)
 
 	exchangeName := "unit-test-exchange-direct"
-	exchangeSettings := &ExchangeSettings{
+	exchangeSettings := ExchangeSettings{
 		Name:       exchangeName,
 		Kind:       "direct",
 		Durable:    false,
@@ -191,7 +200,7 @@ func TestPublishToDirectExchangeWithRoutingKeyAndConsume(t *testing.T) {
 
 	bindKey := "test-bind-key"
 
-	queueSettings := &QueueSettings{
+	queueSettings := QueueSettings{
 		Name:        "",
 		Durable:     false,
 		AutoDelete:  false,
@@ -213,7 +222,7 @@ func TestPublishToDirectExchangeWithRoutingKeyAndConsume(t *testing.T) {
 
 	assert.Nil(t, err)
 
-	go client.Consume(context.TODO(), &ConsumerSettings{
+	go client.Consume(context.TODO(), ConsumerSettings{
 		Consumer:    "",
 		AutoAck:     false,
 		Exclusive:   false,
@@ -243,7 +252,7 @@ func TestPublishToTopicExchangeWithRoutingKeyAndConsumeWithWildcard(t *testing.T
 	time.Sleep(2 * time.Second)
 
 	exchangeName := "unit-test-exchange-topic"
-	exchangeSettings := &ExchangeSettings{
+	exchangeSettings := ExchangeSettings{
 		Name:       exchangeName,
 		Kind:       "topic",
 		Durable:    false,
@@ -259,7 +268,7 @@ func TestPublishToTopicExchangeWithRoutingKeyAndConsumeWithWildcard(t *testing.T
 	bindKeyOne := "test.one"
 	bindKeyTwo := "test.two"
 
-	queueSettings := &QueueSettings{
+	queueSettings := QueueSettings{
 		Name:        "",
 		Durable:     false,
 		AutoDelete:  false,
@@ -282,7 +291,7 @@ func TestPublishToTopicExchangeWithRoutingKeyAndConsumeWithWildcard(t *testing.T
 
 	assert.Nil(t, err)
 
-	go client.Consume(context.TODO(), &ConsumerSettings{
+	go client.Consume(context.TODO(), ConsumerSettings{
 		Consumer:    "",
 		AutoAck:     false,
 		Exclusive:   false,
@@ -312,7 +321,7 @@ func TestPublishToFanoutExchangeAndConsumeWithMultipleConsumers(t *testing.T) {
 	time.Sleep(2 * time.Second)
 
 	exchangeName := "unit-test-exchange-fanout-multi"
-	exchangeSettings := &ExchangeSettings{
+	exchangeSettings := ExchangeSettings{
 		Name:       exchangeName,
 		Kind:       "fanout",
 		Durable:    false,
@@ -326,7 +335,7 @@ func TestPublishToFanoutExchangeAndConsumeWithMultipleConsumers(t *testing.T) {
 
 	assert.Nil(t, err)
 
-	queueSettings := &QueueSettings{
+	queueSettings := QueueSettings{
 		Name:        "",
 		Durable:     false,
 		AutoDelete:  false,
@@ -348,7 +357,7 @@ func TestPublishToFanoutExchangeAndConsumeWithMultipleConsumers(t *testing.T) {
 
 	assert.Nil(t, err)
 
-	go client.Consume(context.TODO(), &ConsumerSettings{
+	go client.Consume(context.TODO(), ConsumerSettings{
 		Consumer:    "",
 		AutoAck:     false,
 		Exclusive:   false,
@@ -359,7 +368,7 @@ func TestPublishToFanoutExchangeAndConsumeWithMultipleConsumers(t *testing.T) {
 		Args:        nil,
 	})
 
-	go client.Consume(context.TODO(), &ConsumerSettings{
+	go client.Consume(context.TODO(), ConsumerSettings{
 		Consumer:    "",
 		AutoAck:     false,
 		Exclusive:   false,
@@ -384,7 +393,14 @@ func TestPublishToFanoutExchangeAndConsumeWithMultipleConsumers(t *testing.T) {
 }
 
 func createClient() Client {
-	client := New("guest", "guest", "localhost", 5672, 0, 0)
+	client := New(ConnectionSettings{
+		User:           "guest",
+		Password:       "guest",
+		Host:           "localhost",
+		Port:           5672,
+		ReconnectDelay: 0,
+		ResendDelay:    0,
+	}, &zerolog.Logger{})
 	return client
 }
 

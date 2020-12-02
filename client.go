@@ -2,10 +2,9 @@ package gorabbit
 
 import (
 	"context"
-	"fmt"
 	"github.com/pkg/errors"
+	"github.com/rs/zerolog"
 	"github.com/streadway/amqp"
-	"log"
 	"net/url"
 	"os"
 	"os/signal"
@@ -17,7 +16,7 @@ import (
 )
 
 var (
-	ErrDisconnected = errors.New("disconnected from rabbitMQ, trying to reconnect")
+	ErrDisconnected = errors.New("disconnected from rabbitmq, trying to reconnect")
 )
 
 // HandlerFunc takes a amqp delivery and process it
@@ -33,51 +32,53 @@ type client struct {
 	isConnected           bool
 	reconnectDelay        time.Duration
 	resendDelay           time.Duration
-	queues                map[string]*QueueSettings
-	exchanges             map[string]*ExchangeSettings
-	consumers             []*ConsumerSettings
+	queues                map[string]QueueSettings
+	exchanges             map[string]ExchangeSettings
+	consumers             []ConsumerSettings
+	logger                *zerolog.Logger
 	wg                    *sync.WaitGroup
 }
 
-// Client defines the methods of the rabbitMQ client
+// Client defines the methods of the rabbitmq client
 type Client interface {
 	Publish(data []byte, exchange, key string) error
 	UnsafePublish(data []byte, exchange, key string) error
-	Consume(ctx context.Context, settings *ConsumerSettings) error
-	DeclareQueue(settings *QueueSettings) (string, error)
+	Consume(ctx context.Context, settings ConsumerSettings) error
+	DeclareQueue(settings QueueSettings) (string, error)
 	DeleteQueue(name string, ifUnused, ifEmpty, noWait bool) error
-	DeclareExchange(settings *ExchangeSettings) error
+	DeclareExchange(settings ExchangeSettings) error
 	DeleteExchange(name string, ifUnused, noWait bool) error
-	DeclareQueueForExchange(settings *QueueSettings) (string, error)
+	DeclareQueueForExchange(settings QueueSettings) (string, error)
 	IsConnected() bool
 }
 
 // New Returns a new instance of the Client and opens a connection to the rabbitmq server
-func New(user, password, host string, port int, reconnectDelay, resendDelay time.Duration) Client {
+func New(settings ConnectionSettings, logger *zerolog.Logger) Client {
 	doneChan := make(chan os.Signal, 1)
 	signal.Notify(doneChan, syscall.SIGINT, syscall.SIGTERM)
 
 	// set default reconnect delay
-	if reconnectDelay == 0 {
-		reconnectDelay = 5 * time.Second
+	if settings.ReconnectDelay == 0 {
+		settings.ReconnectDelay = 5 * time.Second
 	}
 
 	// set default resend delay
-	if resendDelay == 0 {
-		resendDelay = time.Second
+	if settings.ResendDelay == 0 {
+		settings.ResendDelay = time.Second
 	}
 
 	// init client
 	client := client{
 		done:           doneChan,
-		reconnectDelay: reconnectDelay,
-		resendDelay:    resendDelay,
-		queues:         make(map[string]*QueueSettings),
-		exchanges:      make(map[string]*ExchangeSettings),
+		reconnectDelay: settings.ReconnectDelay,
+		resendDelay:    settings.ResendDelay,
+		queues:         make(map[string]QueueSettings),
+		exchanges:      make(map[string]ExchangeSettings),
+		logger:         logger,
 		wg:             &sync.WaitGroup{},
 	}
 
-	go client.handleReconnect(address(user, password, host, port))
+	go client.handleReconnect(address(settings.User, settings.Password, settings.Host, settings.Port))
 
 	return &client
 }
@@ -102,38 +103,39 @@ func address(user, password, host string, port int) string {
 }
 
 // handleReconnect will wait for a connection error on notifyConnectionError and then attempt to reconnect.
-// In addition, it will redeclare all previously declared exchanges and queues and start
-// all registered consumers
+// In addition, it will redeclare all previously declared exchanges and queues and start all registered consumers
 func (c *client) handleReconnect(addr string) {
 	for {
 		c.isConnected = false
 		t := time.Now()
 
-		fmt.Printf("attempting to connect to rabbitMQ: %s\n", addr)
+		c.logger.Info().Msgf("attempting to connect to rabbitmq: %s\n", addr)
 
 		var retries int
 		for !c.connect(addr) {
 			select {
 			case <-c.done:
+				c.logger.Error().Msg("reconnect failed. closing rabbitmq client")
 				c.isConnected = false
 				return
 			case <-time.After(c.reconnectDelay + time.Duration(retries)*time.Second):
-				log.Println("disconnected from rabbitMQ and failed to connect")
+				c.logger.Error().Msg("disconnected from rabbitmq and failed to connect")
 				retries++
 			}
 		}
 
-		log.Println(fmt.Sprintf("connected to rabbitMQ in: %v ms", time.Since(t).Milliseconds()))
+		c.logger.Info().Msgf("connected to rabbitmq in: %v ms", time.Since(t).Milliseconds())
 
 		err := c.handleReconnectConsumers()
 		if err != nil {
-			log.Printf("failed to reconnect consumers: %v", err.Error())
+			c.logger.Error().Msgf("failed to reconnect consumers: %v", err.Error())
 			c.isConnected = false
 			continue
 		}
 
 		select {
 		case <-c.done:
+			c.logger.Error().Msg("reconnect failed. closing rabbitmq client")
 			c.isConnected = false
 			return
 		case <-c.notifyConnectionError:
@@ -152,7 +154,10 @@ func (c *client) handleReconnectConsumers() error {
 		return err
 	}
 
-	c.startConsumers()
+	err = c.startConsumers()
+	if err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -165,7 +170,7 @@ func (c *client) declareRegisteredExchanges() error {
 		}
 	}
 
-	log.Println(fmt.Sprintf("started up %v registered exchanges", len(c.exchanges)))
+	c.logger.Info().Msgf("started up %v registered exchanges", len(c.exchanges))
 	return nil
 }
 
@@ -185,35 +190,39 @@ func (c *client) declareRegisteredQueues() error {
 		}
 	}
 
-	log.Println(fmt.Sprintf("started up %v registered queues", len(c.queues)))
+	c.logger.Info().Msgf("started up %v registered queues", len(c.queues))
 	return nil
 }
 
-func (c *client) startConsumers() {
+func (c *client) startConsumers() error {
 	for _, settings := range c.consumers {
-		go c.Consume(settings.CancelCtx, settings) // TODO handle errors with chan and let reconnect fail, if err != nil
+		err := c.Consume(settings.CancelCtx, settings)
+		if err != nil {
+			return errors.New("failed to register consumer " + settings.Consumer + " for queue " + settings.Queue)
+		}
 	}
 
-	log.Println(fmt.Sprintf("started up %v registered consumers", len(c.consumers)))
+	c.logger.Info().Msgf("started up %v registered consumers", len(c.consumers))
+	return nil
 }
 
 // connect will make a single attempt to connect to RabbitMQ
 func (c *client) connect(addr string) bool {
 	conn, err := amqp.Dial(addr)
 	if err != nil {
-		log.Println(fmt.Sprintf("failed to dial rabbitMQ server: %v", err))
+		c.logger.Error().Msgf("failed to dial rabbitmq server: %v", err)
 		return false
 	}
 
 	ch, err := conn.Channel()
 	if err != nil {
-		log.Println(fmt.Sprintf("failed connecting to channel: %v", err))
+		c.logger.Error().Msgf("failed connecting to channel: %v", err)
 		return false
 	}
 
 	err = ch.Confirm(false)
 	if err != nil {
-		log.Println(fmt.Sprintf("failed setting channel on confirm mode: %v", err))
+		c.logger.Error().Msgf("failed setting channel on confirm mode: %v", err)
 		return false
 	}
 
@@ -258,7 +267,7 @@ func (c *client) Publish(data []byte, exchange, routingKey string) error {
 				return nil
 			}
 		case returned := <-c.notifyReturn:
-			log.Printf("failed to publish message. there seems to be no listening queue. message %v dropped", returned.MessageId)
+			c.logger.Warn().Msgf("failed to publish message. there seems to be no listening queue. message %v dropped", returned.MessageId)
 			return nil
 		case <-time.After(c.resendDelay * time.Second):
 		}
@@ -287,15 +296,12 @@ func (c *client) UnsafePublish(data []byte, exchange, routingKey string) error {
 }
 
 // Consume will consume a Queue and apply a HandlerFunc to the received message
-func (c *client) Consume(cancelCtx context.Context, settings *ConsumerSettings) error {
-	if settings == nil {
-		return errors.New("missing consumer settings")
-	}
-
+func (c *client) Consume(cancelCtx context.Context, settings ConsumerSettings) error {
 	for {
 		if c.isConnected {
 			break
 		}
+		c.logger.Error().Msgf("trying to reconnect consumer %v to queue %v ...", settings.Consumer, settings.Queue)
 		time.Sleep(1 * time.Second)
 	}
 
@@ -303,8 +309,6 @@ func (c *client) Consume(cancelCtx context.Context, settings *ConsumerSettings) 
 	if err != nil {
 		return err
 	}
-
-	var connectionDropped bool
 
 	msgs, err := c.channel.Consume(
 		settings.Queue,
@@ -321,39 +325,35 @@ func (c *client) Consume(cancelCtx context.Context, settings *ConsumerSettings) 
 
 	c.consumers = append(c.consumers, settings)
 
-	c.wg.Add(1)
 	go func() {
-		defer c.wg.Done()
-
 		for {
 			select {
 			case <-cancelCtx.Done():
 				return
 			case msg, ok := <-msgs:
 				if !ok {
-					connectionDropped = true
+					c.notifyConnectionError <- &amqp.Error{
+						Code:    999,
+						Reason:  "consumer connection failed",
+						Server:  false,
+						Recover: true,
+					}
 					return
 				}
 
 				err := settings.HandlerFunc(&msg)
 				if err != nil {
-					log.Println(fmt.Sprintf("Error during msg handling: %v", err.Error()))
+					c.logger.Error().Msgf("Error during msg handling: %v", err.Error())
 				}
 			}
 		}
 	}()
 
-	c.wg.Wait()
-
-	if connectionDropped {
-		return ErrDisconnected
-	}
-
 	return nil
 }
 
 // DeclareQueue creates a Queue if non exists
-func (c *client) DeclareQueue(settings *QueueSettings) (string, error) {
+func (c *client) DeclareQueue(settings QueueSettings) (string, error) {
 	queue, err := c.channel.QueueDeclare(
 		settings.Name,
 		settings.Durable,
@@ -371,7 +371,7 @@ func (c *client) DeclareQueue(settings *QueueSettings) (string, error) {
 }
 
 // DeclareQueueForExchange creates a Queue for an exchange, if non exists
-func (c *client) DeclareQueueForExchange(settings *QueueSettings) (string, error) {
+func (c *client) DeclareQueueForExchange(settings QueueSettings) (string, error) {
 	queue, err := c.channel.QueueDeclare(
 		settings.Name,
 		settings.Durable,
@@ -405,7 +405,7 @@ func (c *client) DeclareQueueForExchange(settings *QueueSettings) (string, error
 }
 
 // DeclareExchange creates an exchange if it does not already exist
-func (c *client) DeclareExchange(settings *ExchangeSettings) error {
+func (c *client) DeclareExchange(settings ExchangeSettings) error {
 	err := c.channel.ExchangeDeclare(
 		settings.Name,
 		settings.Kind,
@@ -423,7 +423,7 @@ func (c *client) DeclareExchange(settings *ExchangeSettings) error {
 	return err
 }
 
-// IsConnected returns if the client is connected to the rabbitMQ server
+// IsConnected returns if the client is connected to the rabbitmq server
 func (c *client) IsConnected() bool {
 	return c.isConnected
 }
@@ -437,7 +437,7 @@ func (c *client) DeleteQueue(name string, ifUnused, ifEmpty, noWait bool) error 
 
 	delete(c.queues, name)
 
-	log.Println(fmt.Sprintf(`deleted Queue. purged %v messages`, purgedMessages))
+	c.logger.Info().Msgf(`deleted Queue. purged %v messages`, purgedMessages)
 	return nil
 }
 
@@ -450,6 +450,6 @@ func (c *client) DeleteExchange(name string, ifUnused, noWait bool) error {
 
 	delete(c.exchanges, name)
 
-	log.Println(fmt.Sprintf(`deleted exchange %s`, name))
+	c.logger.Info().Msgf(`deleted exchange %s`, name)
 	return err
 }
